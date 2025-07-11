@@ -1,5 +1,5 @@
 # bot.py
-# Main file for the Manager Bot (v1.2 - Simplified "Add Bot" & Error Fix)
+# Main file for the Manager Bot (v1.3 - Entity Error Fix & Hindi Language)
 
 import asyncio
 import logging
@@ -51,27 +51,24 @@ async def start_handler(event):
 
     if user_id == config.OWNER_ID:
         # Owner's special interface
-        if not (user_client and user_client.is_connected()):
-            is_logged_in = await initialize_user_client()
-        else:
-            is_logged_in = True
+        is_logged_in = user_client and user_client.is_connected()
         
         buttons = [
-            [Button.text("🔒 Login" if not is_logged_in else "✅ Logged In", resize=True)],
-            [Button.text("🌐 Connected Chats"), Button.text("🤖 Add New Bot")],
-            [Button.text("📊 Stats"), Button.text("📣 Broadcast")]
+            [Button.text("🔒 लॉगिन करें" if not is_logged_in else "✅ लॉगिन हो गया", resize=True)],
+            [Button.text("🌐 कनेक्टेड चैट्स"), Button.text("🤖 नया बॉट जोड़ें")],
+            [Button.text("📊 आँकड़े"), Button.text("📣 ब्रॉडकास्ट")]
         ]
-        await event.respond("👑 **Welcome, Owner!**\nThis is your Manager Bot control panel.", buttons=buttons)
+        await event.respond("👑 **स्वागत है, मालिक!**\nयह आपका मैनेजर बॉट कंट्रोल पैनल है।", buttons=buttons)
     else:
         # Normal user interface
         me = await bot.get_me()
-        buttons = [[Button.url("➕ Add Me to a Group ➕", f"https://t.me/{me.username}?startgroup=true")]]
+        buttons = [[Button.url("➕ मुझे एक ग्रुप में जोड़ें ➕", f"https://t.me/{me.username}?startgroup=true")]]
         await event.respond(
-            "**Welcome!** 👋\n\nI am a Group Management Bot.\n\n"
-            "**Instructions:**\n"
-            "1. Click the button below to add me to your group.\n"
-            "2. Make me an administrator with full rights.\n"
-            "I will help the group owner manage other bots.",
+            "**नमस्ते!** 👋\n\nमैं एक ग्रुप मैनेजमेंट बॉट हूँ।\n\n"
+            "**निर्देश:**\n"
+            "1. मुझे अपने ग्रुप में जोड़ने के लिए नीचे दिए गए बटन पर क्लिक करें।\n"
+            "2. मुझे पूरे अधिकारों के साथ एडमिन बनाएं।\n"
+            "मैं ग्रुप के मालिक को अन्य बॉट्स को प्रबंधित करने में मदद करूँगा।",
             buttons=buttons
         )
 
@@ -83,23 +80,20 @@ async def chat_action_handler(event):
         chat = await event.get_chat()
         owner = await event.get_user()
         
-        # Notify bot owner
         await bot.send_message(
             config.OWNER_ID,
-            f"✅ **New Group Added!**\n\n"
-            f"**Group:** {chat.title} (`{chat.id}`)\n"
-            f"**Added by:** {owner.first_name} (@{owner.username or 'N/A'})"
+            f"✅ **नया ग्रुप जोड़ा गया!**\n\n"
+            f"**ग्रुप:** {chat.title} (`{chat.id}`)\n"
+            f"**किसने जोड़ा:** {owner.first_name} (@{owner.username or 'N/A'})"
         )
-        # Save to database
         db.add_connected_chat(chat.id, chat.title)
 
-# --- Owner Command Handlers (from buttons and text) ---
+# --- Owner Command Handlers ---
 
 @bot.on(events.NewMessage(from_users=config.OWNER_ID, func=lambda e: e.is_private))
 async def owner_commands_handler(event):
     text = event.raw_text
 
-    # Check for state first (for login flow)
     owner = db.get_user(config.OWNER_ID)
     if owner and owner.get('state') == 'awaiting_phone':
         phone_match = re.match(r'\+?\d[\d\s-]{8,}\d', text)
@@ -107,61 +101,59 @@ async def owner_commands_handler(event):
             await process_login_phone(event, phone_match.group(0).strip())
             return
 
-    # Button commands
-    if text == "🔒 Login":
+    if text == "🔒 लॉगिन करें":
         db.update_user_state(config.OWNER_ID, 'awaiting_phone')
         await event.respond(
-            "Please send your phone number (with country code, e.g., `+919876543210`) or use the button below.",
-            buttons=Button.request_phone("📱 Share Contact", resize=True)
+            "कृपया अपना फ़ोन नंबर भेजें (कंट्री कोड के साथ, जैसे `+919876543210`) या नीचे दिए गए बटन का उपयोग करें।",
+            buttons=Button.request_phone("📱 संपर्क साझा करें", resize=True)
         )
     
-    elif text == "🌐 Connected Chats":
-        if not user_client: return await event.respond("⚠️ Please login first.")
+    elif text == "🌐 कनेक्टेड चैट्स":
+        if not user_client: return await event.respond("⚠️ कृपया पहले लॉगिन करें।")
         chats = db.get_connected_chats()
-        if not chats: return await event.respond("📭 No connected chats found.")
+        if not chats: return await event.respond("📭 कोई कनेक्टेड चैट नहीं मिली।")
         
-        response = "**🌐 Connected Chats:**\n\n"
+        response = "**🌐 कनेक्टेड चैट्स:**\n\n"
         for chat in chats:
             response += f"• **{chat['title']}** (`{chat['chat_id']}`)\n"
         await event.respond(response)
 
-    elif text == "🤖 Add New Bot": # Changed button text
-        if not user_client: return await event.respond("⚠️ Please login first.")
+    elif text == "🤖 नया बॉट जोड़ें":
+        if not user_client: return await event.respond("⚠️ कृपया पहले लॉगिन करें।")
         async with bot.conversation(config.OWNER_ID) as conv:
-            await conv.send_message("Please send the **username** of the **new bot** you want to add as admin (e.g., `@NewBot`).")
+            await conv.send_message("कृपया उस **नए बॉट** का **यूजरनेम** भेजें जिसे आप एडमिन के रूप में जोड़ना चाहते हैं (जैसे, `@NewBot`).")
             new_bot_username = await conv.get_response()
             await add_bot_process(event, new_bot_username.text.strip())
 
-    elif text == "📊 Stats":
+    elif text == "📊 आँकड़े":
         total_users = len(db.get_all_users())
         connected_chats = len(db.get_connected_chats())
-        await event.respond(f"**📊 Bot Stats:**\n\n"
-                            f"👤 **Total Users:** {total_users}\n"
-                            f"🌐 **Connected Chats:** {connected_chats}")
+        await event.respond(f"**📊 बॉट के आँकड़े:**\n\n"
+                            f"👤 **कुल उपयोगकर्ता:** {total_users}\n"
+                            f"🌐 **कनेक्टेड चैट्स:** {connected_chats}")
 
-    elif text == "📣 Broadcast":
+    elif text == "📣 ब्रॉडकास्ट":
         async with bot.conversation(config.OWNER_ID) as conv:
-            await conv.send_message("Please send the message you want to broadcast to all users.")
+            await conv.send_message("कृपया वह संदेश भेजें जिसे आप सभी उपयोगकर्ताओं को ब्रॉडकास्ट करना चाहते हैं।")
             message_to_broadcast = await conv.get_response()
             
             users = db.get_all_users()
             sent_count = 0
             failed_count = 0
-            status_msg = await conv.send_message(f"🚀 Starting broadcast to {len(users)} users...")
+            status_msg = await conv.send_message(f"🚀 {len(users)} उपयोगकर्ताओं को ब्रॉडकास्ट शुरू किया जा रहा है...")
             
             for user in users:
-                try:
-                    if user['user_id'] != config.OWNER_ID:
+                if user['user_id'] != config.OWNER_ID:
+                    try:
                        await bot.send_message(user['user_id'], message_to_broadcast)
                        sent_count += 1
-                except Exception:
-                    failed_count += 1
-                await asyncio.sleep(0.1)
+                    except Exception:
+                        failed_count += 1
+                    await asyncio.sleep(0.1)
             
-            await status_msg.edit(f"✅ **Broadcast Complete!**\n\n"
-                                  f"📬 **Sent:** {sent_count}\n"
-                                  f"❌ **Failed:** {failed_count}")
-
+            await status_msg.edit(f"✅ **ब्रॉडकास्ट पूरा हुआ!**\n\n"
+                                  f"📬 **भेजा गया:** {sent_count}\n"
+                                  f"❌ **विफल:** {failed_count}")
 
 # --- Login Process ---
 
@@ -178,42 +170,39 @@ async def process_login_phone(event, phone_number):
     async with bot.conversation(config.OWNER_ID, timeout=300) as conv:
         try:
             code_request = await temp_client.send_code_request(phone_number)
-            await conv.send_message("Please send the OTP you received from Telegram.")
+            await conv.send_message("कृपया टेलीग्राम से प्राप्त ओटीपी भेजें।")
             otp_code = await conv.get_response()
             
             await temp_client.sign_in(phone_number, code=otp_code.text, phone_code_hash=code_request.phone_code_hash)
             
         except Exception as e:
             if "password" in str(e).lower():
-                await conv.send_message("Your account has 2FA enabled. Please send your password.")
+                await conv.send_message("आपके खाते में 2FA सक्षम है। कृपया अपना पासवर्ड भेजें।")
                 password = await conv.get_response()
                 await temp_client.sign_in(password=password.text)
             else:
-                await conv.send_message(f"❌ Login failed: {e}")
+                await conv.send_message(f"❌ लॉगिन विफल: {e}")
                 if temp_client.is_connected(): await temp_client.disconnect()
                 return
         
         session_string = temp_client.session.save()
         db.update_session(config.OWNER_ID, session_string)
         if temp_client.is_connected(): await temp_client.disconnect()
-        await conv.send_message("✅ **Login Successful!** Userbot is now active.")
+        await conv.send_message("✅ **लॉगिन सफल!** Userbot अब सक्रिय है।")
         await initialize_user_client()
-
 
 # --- Core "Add Bot" Logic ---
 
 async def add_bot_process(event, new_bot_username):
+    if not user_client: return await event.respond("⚠️ Userbot active nahi hai. Pehle login karein.")
     chats = db.get_connected_chats()
     total_chats = len(chats)
     if total_chats == 0:
-        return await event.respond("No connected chats to process.")
+        return await event.respond("प्रक्रिया के लिए कोई कनेक्टेड चैट नहीं है।")
 
-    status_msg = await event.respond(f"🔄 Starting process for {total_chats} chats...")
+    status_msg = await event.respond(f"🔄 {total_chats} चैट्स के लिए प्रक्रिया शुरू हो रही है...")
+    admin_done, admin_failed = 0, 0
     
-    admin_done = 0
-    admin_failed = 0
-    
-    # Define full admin rights
     admin_rights = ChatAdminRights(
         change_info=True, post_messages=True, edit_messages=True,
         delete_messages=True, ban_users=True, invite_users=True,
@@ -224,42 +213,45 @@ async def add_bot_process(event, new_bot_username):
         chat_id = chat_info['chat_id']
         chat_title = chat_info['title']
         
-        if i > 0 and i % 5 == 0:
+        if i > 0 and i % 4 == 0:
             try:
                 await status_msg.edit(
-                    f"**🔄 Progress: {i}/{total_chats}**\n\n"
-                    f"✅ **Admin Added:** {admin_done}\n"
-                    f"❌ **Failed:** {admin_failed}\n\n"
-                    f"Current: *Processing {chat_title}...*"
+                    f"**🔄 प्रगति: {i}/{total_chats}**\n\n"
+                    f"✅ **सफलतापूर्वक जोड़ा गया:** {admin_done}\n"
+                    f"❌ **विफल:** {admin_failed}\n\n"
+                    f"अभी प्रोसेस हो रहा है: *{chat_title}*..."
                 )
             except: pass
         
         try:
-            # **ERROR FIX:** Using EditAdminRequest directly for compatibility
+            # **ERROR FIX:** Pehle entity hasil karein
+            LOGGER.info(f"Resolving entity for {new_bot_username}")
+            new_bot_entity = await user_client.get_entity(new_bot_username)
+            
+            LOGGER.info(f"Promoting {new_bot_username} in {chat_title}")
             await user_client(EditAdminRequest(
                 channel=chat_id,
-                user_id=new_bot_username,
+                user_id=new_bot_entity.id,
                 admin_rights=admin_rights,
-                rank='bot' # a rank is required
+                rank='bot'
             ))
             
-            LOGGER.info(f"Successfully promoted {new_bot_username} in {chat_title}")
             admin_done += 1
             
         except ChatAdminRequiredError:
-            LOGGER.error(f"Failed in {chat_title}: Userbot is not an admin or lacks rights.")
+            LOGGER.error(f"{chat_title} में विफल: Userbot एडमिन नहीं है या उसके पास अधिकार नहीं हैं।")
             admin_failed += 1
         except Exception as e:
-            LOGGER.error(f"An unexpected error occurred in {chat_title}: {e}")
+            LOGGER.error(f"{chat_title} में एक अप्रत्याशित त्रुटि हुई: {e}")
             admin_failed += 1
         
         await asyncio.sleep(5) 
 
     await status_msg.edit(
-        f"✅ **Process Complete!**\n\n"
-        f"**Total Chats:** {total_chats}\n"
-        f"✅ **Successfully Added:** {admin_done}\n"
-        f"❌ **Failed:** {admin_failed}"
+        f"✅ **प्रक्रिया पूरी हुई!**\n\n"
+        f"**कुल चैट्स:** {total_chats}\n"
+        f"✅ **सफलतापूर्वक जोड़ा गया:** {admin_done}\n"
+        f"❌ **विफल:** {admin_failed}"
     )
 
 # --- Main Execution ---
