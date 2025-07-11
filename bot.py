@@ -1,13 +1,13 @@
 # bot.py
-# Main file for the Manager Bot (v1.1 - Manual Phone Number Fix)
+# Main file for the Manager Bot (v1.2 - Simplified "Add Bot" & Error Fix)
 
 import asyncio
 import logging
 import re
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-from telethon.errors import UserAlreadyParticipantError, UserNotParticipantError, ChatAdminRequiredError
-from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.errors import UserNotParticipantError, ChatAdminRequiredError
+from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.types import ChatAdminRights
 
 import config
@@ -58,7 +58,7 @@ async def start_handler(event):
         
         buttons = [
             [Button.text("🔒 Login" if not is_logged_in else "✅ Logged In", resize=True)],
-            [Button.text("🌐 Connected Chats"), Button.text("🤖 Change Bot")],
+            [Button.text("🌐 Connected Chats"), Button.text("🤖 Add New Bot")],
             [Button.text("📊 Stats"), Button.text("📣 Broadcast")]
         ]
         await event.respond("👑 **Welcome, Owner!**\nThis is your Manager Bot control panel.", buttons=buttons)
@@ -102,7 +102,6 @@ async def owner_commands_handler(event):
     # Check for state first (for login flow)
     owner = db.get_user(config.OWNER_ID)
     if owner and owner.get('state') == 'awaiting_phone':
-        # Check if the message is a valid phone number (manual input)
         phone_match = re.match(r'\+?\d[\d\s-]{8,}\d', text)
         if phone_match:
             await process_login_phone(event, phone_match.group(0).strip())
@@ -126,14 +125,12 @@ async def owner_commands_handler(event):
             response += f"• **{chat['title']}** (`{chat['chat_id']}`)\n"
         await event.respond(response)
 
-    elif text == "🤖 Change Bot":
+    elif text == "🤖 Add New Bot": # Changed button text
         if not user_client: return await event.respond("⚠️ Please login first.")
         async with bot.conversation(config.OWNER_ID) as conv:
-            await conv.send_message("Please send the **username** of the **new bot** you want to add (e.g., `@NewBot`).")
+            await conv.send_message("Please send the **username** of the **new bot** you want to add as admin (e.g., `@NewBot`).")
             new_bot_username = await conv.get_response()
-            await conv.send_message("Now, send the **username** of the **old bot** to remove (e.g., `@OldBot`).")
-            old_bot_username = await conv.get_response()
-            await change_bot_process(event, new_bot_username.text.strip(), old_bot_username.text.strip())
+            await add_bot_process(event, new_bot_username.text.strip())
 
     elif text == "📊 Stats":
         total_users = len(db.get_all_users())
@@ -154,13 +151,12 @@ async def owner_commands_handler(event):
             
             for user in users:
                 try:
-                    # Don't broadcast to self
                     if user['user_id'] != config.OWNER_ID:
                        await bot.send_message(user['user_id'], message_to_broadcast)
                        sent_count += 1
                 except Exception:
                     failed_count += 1
-                await asyncio.sleep(0.1) # Small delay
+                await asyncio.sleep(0.1)
             
             await status_msg.edit(f"✅ **Broadcast Complete!**\n\n"
                                   f"📬 **Sent:** {sent_count}\n"
@@ -169,15 +165,13 @@ async def owner_commands_handler(event):
 
 # --- Login Process ---
 
-# Handler for "Share Contact" button
 @bot.on(events.NewMessage(func=lambda e: e.is_private and e.contact and e.sender_id == config.OWNER_ID))
 async def phone_handler_button(event):
     phone = event.message.contact.phone_number
     await process_login_phone(event, phone)
 
-# Unified function to handle login after getting phone
 async def process_login_phone(event, phone_number):
-    db.update_user_state(config.OWNER_ID, None) # Clear state
+    db.update_user_state(config.OWNER_ID, None)
     temp_client = TelegramClient(StringSession(), config.API_ID, config.API_HASH)
     await temp_client.connect()
     
@@ -203,12 +197,12 @@ async def process_login_phone(event, phone_number):
         db.update_session(config.OWNER_ID, session_string)
         if temp_client.is_connected(): await temp_client.disconnect()
         await conv.send_message("✅ **Login Successful!** Userbot is now active.")
-        await initialize_user_client() # Re-initialize the global client
+        await initialize_user_client()
 
 
-# --- Core "Change Bot" Logic ---
+# --- Core "Add Bot" Logic ---
 
-async def change_bot_process(event, new_bot_username, old_bot_username):
+async def add_bot_process(event, new_bot_username):
     chats = db.get_connected_chats()
     total_chats = len(chats)
     if total_chats == 0:
@@ -219,10 +213,11 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
     admin_done = 0
     admin_failed = 0
     
+    # Define full admin rights
     admin_rights = ChatAdminRights(
         change_info=True, post_messages=True, edit_messages=True,
         delete_messages=True, ban_users=True, invite_users=True,
-        pin_messages=True, add_admins=True
+        pin_messages=True, add_admins=True, manage_call=True
     )
 
     for i, chat_info in enumerate(chats):
@@ -240,15 +235,15 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
             except: pass
         
         try:
-            await user_client.edit_admin(chat_id, new_bot_username, rights=admin_rights)
-            LOGGER.info(f"Successfully added and promoted {new_bot_username} in {chat_title}")
+            # **ERROR FIX:** Using EditAdminRequest directly for compatibility
+            await user_client(EditAdminRequest(
+                channel=chat_id,
+                user_id=new_bot_username,
+                admin_rights=admin_rights,
+                rank='bot' # a rank is required
+            ))
             
-            try:
-                await user_client.kick_participant(chat_id, old_bot_username)
-                LOGGER.info(f"Successfully removed {old_bot_username} from {chat_title}")
-            except UserNotParticipantError:
-                LOGGER.warning(f"{old_bot_username} was not in {chat_title}.")
-            
+            LOGGER.info(f"Successfully promoted {new_bot_username} in {chat_title}")
             admin_done += 1
             
         except ChatAdminRequiredError:
@@ -263,14 +258,13 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
     await status_msg.edit(
         f"✅ **Process Complete!**\n\n"
         f"**Total Chats:** {total_chats}\n"
-        f"✅ **Successfully Changed:** {admin_done}\n"
+        f"✅ **Successfully Added:** {admin_done}\n"
         f"❌ **Failed:** {admin_failed}"
     )
 
 # --- Main Execution ---
 async def main():
     LOGGER.info("Bot starting...")
-    # Add a state field to the user model if it doesn't exist
     if "state" not in (db.users_col.find_one() or {}):
         db.users_col.update_many({}, {"$set": {"state": None}})
         LOGGER.info("Added 'state' field to user documents.")
@@ -279,11 +273,9 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
-    # Add a new function to database.py for state management
     def update_user_state(user_id, state):
         db.users_col.update_one({"user_id": user_id}, {"$set": {"state": state}})
     
-    # Monkey-patch it into the db module for this script to use
     db.update_user_state = update_user_state
     
     bot.loop.run_until_complete(main())
