@@ -1,8 +1,9 @@
 # bot.py
-# Main file for the Manager Bot
+# Main file for the Manager Bot (v1.1 - Manual Phone Number Fix)
 
 import asyncio
 import logging
+import re
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import UserAlreadyParticipantError, UserNotParticipantError, ChatAdminRequiredError
@@ -63,7 +64,8 @@ async def start_handler(event):
         await event.respond("👑 **Welcome, Owner!**\nThis is your Manager Bot control panel.", buttons=buttons)
     else:
         # Normal user interface
-        buttons = [[Button.url("➕ Add Me to a Group ➕", f"https://t.me/{await bot.get_me().username}?startgroup=true")]]
+        me = await bot.get_me()
+        buttons = [[Button.url("➕ Add Me to a Group ➕", f"https://t.me/{me.username}?startgroup=true")]]
         await event.respond(
             "**Welcome!** 👋\n\nI am a Group Management Bot.\n\n"
             "**Instructions:**\n"
@@ -76,7 +78,8 @@ async def start_handler(event):
 @bot.on(events.ChatAction)
 async def chat_action_handler(event):
     """Detect when the bot is added to a new group."""
-    if event.user_added and event.user_id == (await bot.get_me()).id:
+    me = await bot.get_me()
+    if event.user_added and event.user_id == me.id:
         chat = await event.get_chat()
         owner = await event.get_user()
         
@@ -90,14 +93,28 @@ async def chat_action_handler(event):
         # Save to database
         db.add_connected_chat(chat.id, chat.title)
 
-# --- Owner Command Handlers (from buttons) ---
+# --- Owner Command Handlers (from buttons and text) ---
 
-@bot.on(events.NewMessage(from_users=config.OWNER_ID))
+@bot.on(events.NewMessage(from_users=config.OWNER_ID, func=lambda e: e.is_private))
 async def owner_commands_handler(event):
     text = event.raw_text
 
+    # Check for state first (for login flow)
+    owner = db.get_user(config.OWNER_ID)
+    if owner and owner.get('state') == 'awaiting_phone':
+        # Check if the message is a valid phone number (manual input)
+        phone_match = re.match(r'\+?\d[\d\s-]{8,}\d', text)
+        if phone_match:
+            await process_login_phone(event, phone_match.group(0).strip())
+            return
+
+    # Button commands
     if text == "🔒 Login":
-        await event.respond("Please send your phone number to login to Telethon.", buttons=Button.request_phone("📱 Send Phone Number", resize=True))
+        db.update_user_state(config.OWNER_ID, 'awaiting_phone')
+        await event.respond(
+            "Please send your phone number (with country code, e.g., `+919876543210`) or use the button below.",
+            buttons=Button.request_phone("📱 Share Contact", resize=True)
+        )
     
     elif text == "🌐 Connected Chats":
         if not user_client: return await event.respond("⚠️ Please login first.")
@@ -137,8 +154,10 @@ async def owner_commands_handler(event):
             
             for user in users:
                 try:
-                    await bot.send_message(user['user_id'], message_to_broadcast)
-                    sent_count += 1
+                    # Don't broadcast to self
+                    if user['user_id'] != config.OWNER_ID:
+                       await bot.send_message(user['user_id'], message_to_broadcast)
+                       sent_count += 1
                 except Exception:
                     failed_count += 1
                 await asyncio.sleep(0.1) # Small delay
@@ -150,32 +169,39 @@ async def owner_commands_handler(event):
 
 # --- Login Process ---
 
+# Handler for "Share Contact" button
 @bot.on(events.NewMessage(func=lambda e: e.is_private and e.contact and e.sender_id == config.OWNER_ID))
-async def phone_handler(event):
+async def phone_handler_button(event):
     phone = event.message.contact.phone_number
+    await process_login_phone(event, phone)
+
+# Unified function to handle login after getting phone
+async def process_login_phone(event, phone_number):
+    db.update_user_state(config.OWNER_ID, None) # Clear state
     temp_client = TelegramClient(StringSession(), config.API_ID, config.API_HASH)
     await temp_client.connect()
     
-    async with bot.conversation(config.OWNER_ID) as conv:
+    async with bot.conversation(config.OWNER_ID, timeout=300) as conv:
         try:
-            code_request = await temp_client.send_code_request(phone)
-            otp = await conv.send_message("Please send the OTP you received from Telegram.")
+            code_request = await temp_client.send_code_request(phone_number)
+            await conv.send_message("Please send the OTP you received from Telegram.")
             otp_code = await conv.get_response()
             
-            await temp_client.sign_in(phone, code=otp_code.text, phone_code_hash=code_request.phone_code_hash)
+            await temp_client.sign_in(phone_number, code=otp_code.text, phone_code_hash=code_request.phone_code_hash)
             
         except Exception as e:
-            # Handle 2FA if needed
             if "password" in str(e).lower():
-                password_prompt = await conv.send_message("Your account has 2FA enabled. Please send your password.")
+                await conv.send_message("Your account has 2FA enabled. Please send your password.")
                 password = await conv.get_response()
                 await temp_client.sign_in(password=password.text)
             else:
-                return await conv.send_message(f"❌ Login failed: {e}")
+                await conv.send_message(f"❌ Login failed: {e}")
+                if temp_client.is_connected(): await temp_client.disconnect()
+                return
         
         session_string = temp_client.session.save()
         db.update_session(config.OWNER_ID, session_string)
-        await temp_client.disconnect()
+        if temp_client.is_connected(): await temp_client.disconnect()
         await conv.send_message("✅ **Login Successful!** Userbot is now active.")
         await initialize_user_client() # Re-initialize the global client
 
@@ -193,7 +219,6 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
     admin_done = 0
     admin_failed = 0
     
-    # Define full admin rights
     admin_rights = ChatAdminRights(
         change_info=True, post_messages=True, edit_messages=True,
         delete_messages=True, ban_users=True, invite_users=True,
@@ -204,24 +229,20 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
         chat_id = chat_info['chat_id']
         chat_title = chat_info['title']
         
-        # Update status message every 5 seconds to avoid floodwait
-        if i % 5 == 0:
-            await status_msg.edit(
-                f"**🔄 Progress: {i}/{total_chats}**\n\n"
-                f"✅ **Admin Added:** {admin_done}\n"
-                f"❌ **Failed:** {admin_failed}\n\n"
-                f"Current: *Processing {chat_title}...*"
-            )
+        if i > 0 and i % 5 == 0:
+            try:
+                await status_msg.edit(
+                    f"**🔄 Progress: {i}/{total_chats}**\n\n"
+                    f"✅ **Admin Added:** {admin_done}\n"
+                    f"❌ **Failed:** {admin_failed}\n\n"
+                    f"Current: *Processing {chat_title}...*"
+                )
+            except: pass
         
         try:
-            # 1. Invite new bot
-            await user_client(GetFullChatRequest(chat_id)) # Cache chat info
-            await user_client.edit_admin(chat_id, new_bot_username, is_admin=True, rights=admin_rights)
-            
-            # 2. Promote new bot to admin (already done with edit_admin)
+            await user_client.edit_admin(chat_id, new_bot_username, rights=admin_rights)
             LOGGER.info(f"Successfully added and promoted {new_bot_username} in {chat_title}")
             
-            # 3. Remove old bot
             try:
                 await user_client.kick_participant(chat_id, old_bot_username)
                 LOGGER.info(f"Successfully removed {old_bot_username} from {chat_title}")
@@ -237,7 +258,7 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
             LOGGER.error(f"An unexpected error occurred in {chat_title}: {e}")
             admin_failed += 1
         
-        await asyncio.sleep(5) # Floodwait prevention
+        await asyncio.sleep(5) 
 
     await status_msg.edit(
         f"✅ **Process Complete!**\n\n"
@@ -249,8 +270,20 @@ async def change_bot_process(event, new_bot_username, old_bot_username):
 # --- Main Execution ---
 async def main():
     LOGGER.info("Bot starting...")
+    # Add a state field to the user model if it doesn't exist
+    if "state" not in (db.users_col.find_one() or {}):
+        db.users_col.update_many({}, {"$set": {"state": None}})
+        LOGGER.info("Added 'state' field to user documents.")
+
     await initialize_user_client()
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
+    # Add a new function to database.py for state management
+    def update_user_state(user_id, state):
+        db.users_col.update_one({"user_id": user_id}, {"$set": {"state": state}})
+    
+    # Monkey-patch it into the db module for this script to use
+    db.update_user_state = update_user_state
+    
     bot.loop.run_until_complete(main())
