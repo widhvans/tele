@@ -10,7 +10,7 @@ API_HASH = "8a19a6a007044ff7b41ada4b377cdfba"  # <-- **TAMARU API HASH AHI NAKHO
 BOT_TOKEN = "8051903430:AAFRMW8HxmplvIaLVo6qH8YS2_ffXADQtcQ"  # <-- **TAMARU BOT TOKEN AHI NAKHO**
 
 # MongoDB Connection URL
-MONGODB_URL = "YOUR_MONGODB_URL"  # <-- **TAMARI MONGODB URL AHI NAKHO**
+MONGODB_URL = "mongodb+srv://soniji:chaloji@cluster0.i5zy74f.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # <-- **TAMARI MONGODB URL AHI NAKHO**
 
 # --- Bot Owner ---
 # Your numeric Telegram User ID. Get it from @userinfobot
