@@ -1,5 +1,5 @@
 # bot.py
-# Main file for the Manager Bot (v1.5 - New Workflow & Robust Error Handling)
+# Main file for the Manager Bot (v1.6 - Forced Interaction to Fix Entity Error)
 
 import asyncio
 import logging
@@ -43,12 +43,10 @@ async def initialize_user_client():
     return False
 
 # --- Bot Event Handlers ---
-
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user_id = event.sender_id
     db.add_user(user_id, event.sender.first_name, event.sender.username)
-
     if user_id == config.OWNER_ID:
         is_logged_in = user_client and user_client.is_connected()
         buttons = [
@@ -71,7 +69,6 @@ async def start_handler(event):
 
 @bot.on(events.ChatAction)
 async def chat_action_handler(event):
-    """Detect when the bot is added to a new group."""
     me = await bot.get_me()
     if event.user_added and event.user_id == me.id:
         chat = await event.get_chat()
@@ -88,7 +85,6 @@ async def chat_action_handler(event):
 @bot.on(events.NewMessage(from_users=config.OWNER_ID, func=lambda e: e.is_private))
 async def owner_commands_handler(event):
     text = event.raw_text
-
     owner = db.get_user(config.OWNER_ID)
     if owner and owner.get('state') == 'awaiting_phone':
         if re.match(r'\+?\d[\d\s-]{8,}\d', text):
@@ -119,13 +115,11 @@ async def owner_commands_handler(event):
             else:
                 await conv.send_message("⚠️ Invalid format. Please send a valid username starting with `@`.")
     elif text == "📊 Stats":
-        total_users = len(db.get_all_users())
-        connected_chats = len(db.get_connected_chats())
+        total_users, connected_chats = len(db.get_all_users()), len(db.get_connected_chats())
         await event.respond(f"**📊 Bot Stats:**\n\n👤 **Total Users:** {total_users}\n🌐 **Connected Chats:** {connected_chats}")
     elif text == "📣 Broadcast":
-        # ... (Broadcast logic remains same)
+        # Broadcast logic here
         pass
-
 
 # --- Login Process ---
 @bot.on(events.NewMessage(func=lambda e: e.is_private and e.contact and e.sender_id == config.OWNER_ID))
@@ -148,8 +142,7 @@ async def process_login_phone(event, phone_number):
                     await conv.send_message("Your account has 2FA enabled. Please send your password.")
                     password = await conv.get_response()
                     await temp_client.sign_in(password=password.text)
-                else:
-                    raise e
+                else: raise e
         session_string = temp_client.session.save()
         db.update_session(config.OWNER_ID, session_string)
         await event.respond("✅ **Login Successful!** Userbot is now active.")
@@ -165,11 +158,15 @@ async def add_bot_process(event, new_bot_username):
     
     status_msg = await event.respond(f"🔄 Starting process to add `{new_bot_username}`...")
     
+    # ** THE FIX: Force interaction with the new bot to get its entity **
     try:
-        LOGGER.info(f"Resolving the new bot's entity: {new_bot_username}")
+        LOGGER.info(f"Attempting to force interaction with {new_bot_username}...")
+        await user_client.send_message(new_bot_username, '/start')
+        await asyncio.sleep(2)  # Wait for the action to complete
         new_bot_entity = await user_client.get_entity(new_bot_username)
+        LOGGER.info(f"Successfully resolved entity for {new_bot_username}.")
     except Exception as e:
-        return await status_msg.edit(f"❌ **Error:** Could not find the bot `{new_bot_username}`. Please check the username.\n\n`{e}`")
+        return await status_msg.edit(f"❌ **Error:** Could not find or interact with the bot `{new_bot_username}`. Please ensure the username is correct and the bot is not deactivated.\n\n`{e}`")
 
     chats = db.get_connected_chats()
     total_chats = len(chats)
@@ -178,7 +175,7 @@ async def add_bot_process(event, new_bot_username):
     admin_done, admin_failed = 0, 0
     admin_rights = ChatAdminRights(change_info=True, post_messages=True, edit_messages=True, delete_messages=True, ban_users=True, invite_users=True, pin_messages=True, add_admins=True, manage_call=True)
 
-    await status_msg.edit(f"🔄 Starting to process {total_chats} chats...")
+    await status_msg.edit(f"✅ Bot recognized. Starting to process {total_chats} chats...")
     
     for i, chat_info in enumerate(chats):
         chat_id = chat_info['chat_id']
